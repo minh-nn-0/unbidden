@@ -13,15 +13,27 @@ static void check_gl_error(const char* where) {
     }
 }
 
-uint32_t VAO, VBO, EBO;
+uint32_t VAO, VAO2, VBO, VBO2, Texcoord_VBO, Texcoord_VBO2, EBO;
 static uint32_t texture;
 // Vertex data: position (x, y) + texture coordinates (u, v)
 float vertices[] = {
-    // positions   // texture coords
-    -0.5f,  0.5f,  0.0f, 0.0f,   // top left
-    -0.5f, -0.5f,  0.0f, 1.0f,   // bottom left
-     0.5f, -0.5f,  1.0f, 1.0f,   // bottom right
-     0.5f,  0.5f,  1.0f, 0.0f    // top right
+    -0.5f,  0.5f,   // top left
+    -0.5f, -0.5f,   // bottom left
+     0.5f, -0.5f,   // bottom right
+     0.5f,  0.5f   // top right
+};
+float texture_coords[] =
+{
+	0.0f, 0.0f,  
+	0.0f, 1.0f,  
+	1.0f, 1.0f,  
+	1.0f, 0.0f   	
+};
+float vertices2[] = {
+    -1.0f,  1.0f,  // top left
+    -1.0f, -1.0f,  // bottom left
+     1.0f, -1.0f,  // bottom right
+     1.0f,  1.0f,  // top right
 };
 
 uint32_t indices[] = {
@@ -166,12 +178,10 @@ static uint32_t load_image()
 	glGenTextures(1, &texture);
 	glBindTexture(GL_TEXTURE_2D, texture);
 
-	SDL_Log("hihihi\n");
 	char path[512];
 	snprintf(path, sizeof(path), "%s/Sample_interior.png", GAMEPATH);
 	SDL_Surface *sf = IMG_Load(path);
 
-	SDL_Log("hihihi\n");
 	if (!sf) {SDL_Log("Error loading %s\n", path); return 0;};
 
 	SDL_Log("sf=%p pixels=%p w=%d h=%d format=%s",
@@ -256,28 +266,49 @@ enum SDL_AppResult SDL_AppInit(void **appstate, int argc, char** argv)
 	}
 
 
-	glGenVertexArrays(1, &VAO);
+	texture = load_image();
+	glBindTexture(GL_TEXTURE_2D, texture);
+
 	glGenBuffers(1, &VBO);
+	glGenBuffers(1, &VBO2);
+	glGenBuffers(1, &Texcoord_VBO);
+	glGenBuffers(1, &Texcoord_VBO2);
 	glGenBuffers(1, &EBO);
 
-	glBindVertexArray(VAO);
-
-	glBindBuffer(GL_ARRAY_BUFFER, VBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+	printf("%d %d\n", VBO, VBO2);
+	glGenVertexArrays(1, &VAO2);
+	
+	glBindVertexArray(VAO2);
+	
+	glBindBuffer(GL_ARRAY_BUFFER, VBO2);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices2), vertices2, GL_STATIC_DRAW);
 
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
 	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
 
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+	glBindBuffer(GL_ARRAY_BUFFER, Texcoord_VBO2);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(texture_coords), texture_coords, GL_STATIC_DRAW);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(1);
+	
+	glGenVertexArrays(1, &VAO);
+	glBindVertexArray(VAO);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+
 	// Position attribute
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+	glBindBuffer(GL_ARRAY_BUFFER, VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(0);
 
 	// Texture coordinate attribute
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+	glBindBuffer(GL_ARRAY_BUFFER, Texcoord_VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(texture_coords), texture_coords, GL_STATIC_DRAW);
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
 	glEnableVertexAttribArray(1);
 
-	texture = load_image();
-	glBindTexture(GL_TEXTURE_2D, texture);
 
 	return SDL_APP_CONTINUE;
 };
@@ -295,15 +326,21 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 	glClear(GL_COLOR_BUFFER_BIT);
 	
 	glUseProgram(game->_es._program);
-	glBindVertexArray(VAO);
 
-	glBindTexture(GL_TEXTURE_2D, texture);
-
-	SDL_Log("About to draw...\n");  // Add this
-	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
-	SDL_Log("Draw complete\n");  // Add this
+	GLint currentVBO;
+	glGetVertexAttribiv(0, GL_VERTEX_ATTRIB_ARRAY_BUFFER_BINDING, &currentVBO);
 	
-	check_gl_error("after draw");
+	printf("%d\n", currentVBO);
+	glBindBuffer(GL_ARRAY_BUFFER, currentVBO);
+	vertices[0] += .001;
+	vertices[4] -= 0.001;
+	glBufferSubData(GL_ARRAY_BUFFER, 0 * sizeof(float), sizeof(float), &vertices[0]);
+	glBufferSubData(GL_ARRAY_BUFFER, 4 * sizeof(float), sizeof(float), &vertices[4]);
+
+	//glBindVertexArray(VAO);
+	//glBindTexture(GL_TEXTURE_2D, texture);
+
+	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
 	SDL_GL_SwapWindow(game->_window);
 
@@ -313,6 +350,20 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
 	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
+	if (event->type == SDL_EVENT_KEY_DOWN)
+	{
+		switch (event->key.key)
+		{
+			case SDLK_A:
+				glBindVertexArray(VAO2);
+				break;
+			case SDLK_B:
+				glBindVertexArray(VAO);
+				break;
+			default:
+				break;
+		};
+	};
 	return SDL_APP_CONTINUE;
 };
 
