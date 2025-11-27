@@ -1,5 +1,4 @@
 #include "glad/gles2.h"
-#include <GLES3/gl32.h>
 #define SDL_MAIN_USE_CALLBACKS
 #include <SDL3/SDL_main.h>
 #include <SDL3/SDL.h>
@@ -7,6 +6,28 @@
 #include <stdlib.h>
 #include <stdio.h>
 
+static void check_gl_error(const char* where) {
+    GLenum err;
+    while ((err = glGetError()) != GL_NO_ERROR) {
+        SDL_LogError(SDL_LOG_CATEGORY_ERROR, "OpenGL error at %s: 0x%x\n", where, err);
+    }
+}
+
+uint32_t VAO, VBO, EBO;
+static uint32_t texture;
+// Vertex data: position (x, y) + texture coordinates (u, v)
+float vertices[] = {
+    // positions   // texture coords
+    -0.5f,  0.5f,  0.0f, 0.0f,   // top left
+    -0.5f, -0.5f,  0.0f, 1.0f,   // bottom left
+     0.5f, -0.5f,  1.0f, 1.0f,   // bottom right
+     0.5f,  0.5f,  1.0f, 0.0f    // top right
+};
+
+uint32_t indices[] = {
+    0, 1, 2,  // first triangle
+    0, 2, 3   // second triangle
+};
 struct EScontext
 {
 	GLuint _program;
@@ -66,7 +87,7 @@ static GLuint load_shader(GLuint type, const char *src)
 
 	glCompileShader(shader);
 
-	glGetProgramiv(shader, GL_COMPILE_STATUS, &compiled);
+	glGetShaderiv(shader, GL_COMPILE_STATUS, &compiled);
 	if (!compiled)
 	{
 		GLint infolength = 0;
@@ -88,11 +109,23 @@ static GLuint load_shader(GLuint type, const char *src)
 
 static void load_es_program(struct EScontext *context, const char *vshader_src, const char *fshader_src)
 {
-	
 	GLuint vertshader = load_shader(GL_VERTEX_SHADER, vshader_src);
+	if (vertshader == 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_ERROR, "Failed to compile vertex shader\n");
+		return;
+	}
+	SDL_Log("Vertex shader compiled: %u\n", vertshader);
+	
 	GLuint fragshader = load_shader(GL_FRAGMENT_SHADER, fshader_src);
+	if (fragshader == 0) {
+		SDL_LogError(SDL_LOG_CATEGORY_ERROR, "Failed to compile fragment shader\n");
+		glDeleteShader(vertshader);
+		return;
+	}
+	SDL_Log("Fragment shader compiled: %u\n", fragshader);
 
 	GLuint program = glCreateProgram();
+	SDL_Log("Program created: %u\n", program);
 
 	glAttachShader(program, vertshader);
 	glAttachShader(program, fragshader);
@@ -115,14 +148,48 @@ static void load_es_program(struct EScontext *context, const char *vshader_src, 
 			free(info);
 		};
 		glDeleteProgram(program);
+		glDeleteShader(vertshader);
+		glDeleteShader(fragshader);
 		return;
 	};
+	
+	SDL_Log("Program linked successfully: %u\n", program);
 	
 	context->_vertshader = vertshader;
 	context->_fragshader = fragshader;
 	context->_program = program;
-};
+}
 
+static uint32_t load_image()
+{
+	uint32_t texture;
+	glGenTextures(1, &texture);
+	glBindTexture(GL_TEXTURE_2D, texture);
+
+	SDL_Log("hihihi\n");
+	char path[512];
+	snprintf(path, sizeof(path), "%s/Sample_interior.png", GAMEPATH);
+	SDL_Surface *sf = IMG_Load(path);
+
+	SDL_Log("hihihi\n");
+	if (!sf) {SDL_Log("Error loading %s\n", path); return 0;};
+
+	SDL_Log("sf=%p pixels=%p w=%d h=%d format=%s",
+       (void*)sf,
+       sf->pixels,
+       sf->w, sf->h,
+       SDL_GetPixelFormatName(sf->format));
+
+	sf = SDL_ConvertSurface(sf, SDL_PIXELFORMAT_ABGR8888);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, sf->w, sf->h, 0, GL_RGBA, GL_UNSIGNED_BYTE, sf->pixels);
+	SDL_Log("hihihi\n");
+
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	SDL_DestroySurface(sf);
+
+	return texture;
+};
 struct Game
 {
 	struct EScontext _es;
@@ -131,17 +198,13 @@ struct Game
 
 enum SDL_AppResult SDL_AppInit(void **appstate, int argc, char** argv)
 {
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
-
 	if(!SDL_Init(SDL_INIT_VIDEO))
 	{
 		SDL_LogError(SDL_LOG_CATEGORY_ERROR, "Failed to init SDL\n");
 		return SDL_APP_FAILURE;
 	};
 	
-	struct SDL_Window *window = SDL_CreateWindow("home invasion", 800, 600, SDL_WINDOWPOS_UNDEFINED | SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
+	struct SDL_Window *window = SDL_CreateWindow("home invasion", 800, 600, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE);
 	
 	if (!window)
 	{
@@ -156,15 +219,19 @@ enum SDL_AppResult SDL_AppInit(void **appstate, int argc, char** argv)
 		SDL_LogError(SDL_LOG_CATEGORY_ERROR, "Failed to get proc address for glad\n");
 		return SDL_APP_FAILURE;
 	};
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+	SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
 
-	struct Game *game = malloc(sizeof(struct Game));
+	;
+	struct Game *game = calloc(1, sizeof(struct Game));
 
 	char path[512];
 
-	snprintf(path, sizeof(path), "%sshader/test.vert", GAMEPATH);
+	snprintf(path, sizeof(path), "%s/shader/testimage.vert", GAMEPATH);
 	SDL_Log("vertex shader path: %s\n", path);
 	char *vshader_src = read_file(path);
-	snprintf(path, sizeof(path), "%sshader/test.frag", GAMEPATH);
+	snprintf(path, sizeof(path), "%s/shader/testimage.frag", GAMEPATH);
 	SDL_Log("fragment shader path: %s\n", path);
 	char *fshader_src = read_file(path);
 
@@ -176,29 +243,67 @@ enum SDL_AppResult SDL_AppInit(void **appstate, int argc, char** argv)
 	game->_window = window;
 
 	*appstate = game;
+
+	glUseProgram(game->_es._program);
+	
+	// Set the texture uniform
+	GLint texLocation = glGetUniformLocation(game->_es._program, "tex");
+	if (texLocation != -1) {
+		glUniform1i(texLocation, 0);  // Use texture unit 0
+		SDL_Log("Texture uniform location: %d\n", texLocation);
+	} else {
+		SDL_LogError(SDL_LOG_CATEGORY_ERROR, "Could not find 'tex' uniform\n");
+	}
+
+
+	glGenVertexArrays(1, &VAO);
+	glGenBuffers(1, &VBO);
+	glGenBuffers(1, &EBO);
+
+	glBindVertexArray(VAO);
+
+	glBindBuffer(GL_ARRAY_BUFFER, VBO);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+	// Position attribute
+	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)0);
+	glEnableVertexAttribArray(0);
+
+	// Texture coordinate attribute
+	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void*)(2 * sizeof(float)));
+	glEnableVertexAttribArray(1);
+
+	texture = load_image();
+	glBindTexture(GL_TEXTURE_2D, texture);
+
 	return SDL_APP_CONTINUE;
 };
+
 
 SDL_AppResult SDL_AppIterate(void *appstate)
 {
 	struct Game *game = (struct Game *)appstate;
 
 	glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-	float vertices[] = 
-		{	0.0f, 0.5f, 0.0f,
-		  	-0.5f, -0.5f, 0.0f,
-			0.5f, -0.5f, 0.0f	};
+	int winw, winh;
+	SDL_GetWindowSize(game->_window, &winw, &winh);
 	
-	glViewport(0, 0, 800, 600);
+	glViewport(0, 0, winw, winh);
 	glClear(GL_COLOR_BUFFER_BIT);
 	
 	glUseProgram(game->_es._program);
+	glBindVertexArray(VAO);
 
-	//Load vertex data
-	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 0, vertices);
-	glEnableVertexAttribArray(0);
+	glBindTexture(GL_TEXTURE_2D, texture);
 
-	glDrawArrays(GL_TRIANGLES, 0, 3);
+	SDL_Log("About to draw...\n");  // Add this
+	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+	SDL_Log("Draw complete\n");  // Add this
+	
+	check_gl_error("after draw");
 
 	SDL_GL_SwapWindow(game->_window);
 
@@ -207,6 +312,7 @@ SDL_AppResult SDL_AppIterate(void *appstate)
 
 SDL_AppResult SDL_AppEvent(void *appstate, SDL_Event *event)
 {
+	if (event->type == SDL_EVENT_QUIT) return SDL_APP_SUCCESS;
 	return SDL_APP_CONTINUE;
 };
 
