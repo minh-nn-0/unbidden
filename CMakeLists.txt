@@ -12,8 +12,17 @@ add_subdirectory(vendor)
 add_executable(homeinvasion
 	src/main.c
 	src/gles2.c
+	src/app.c
 )
 target_include_directories(homeinvasion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_link_libraries(homeinvasion PRIVATE SDL3::SDL3 SDL3_image::SDL3_image SDL3_mixer::SDL3_mixer SDL3_ttf::SDL3_ttf)
+target_link_libraries(homeinvasion PRIVATE
+	SDL3::SDL3
+	SDL3_image::SDL3_image
+	SDL3_mixer::SDL3_mixer
+	SDL3_ttf::SDL3_ttf
+	Vulkan::Vulkan
+)
+
+find_package(Vulkan)
 target_compile_definitions(homeinvasion PRIVATE
 	GAMEPATH="${CMAKE_CURRENT_SOURCE_DIR}")
