@@ -1,4 +1,5 @@
 #include "app.h"
+#include "SDL3/SDL_log.h"
 #include <SDL3_image/SDL_image.h>
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
@@ -11,22 +12,18 @@ static constexpr bool ENABLE_VALIDATION_LAYERS =
 	false;
 #endif
 
-#ifndef NDEBUG
-#endif
-static void show_available_extensions()
+static void show_available_instance_extensions()
 {
     uint32_t count;
     vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
     VkExtensionProperties extensions[count];
     vkEnumerateInstanceExtensionProperties(nullptr, &count, extensions);
     
-    fprintf(stderr, "Available extensions\n");
+    SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "# Available instance extensions\n");
     for (int i = 0; i < count; i++)
     {
-        fprintf(stderr, "%s\t", extensions[i].extensionName);
+        SDL_Log("%s\n", extensions[i].extensionName);
     };
-    
-    fprintf(stderr, "\n");
     
 };
 
@@ -84,6 +81,7 @@ static Result pick_physical_device(VulkanState *vk)
 	
 	vk->_physical_device = VK_NULL_HANDLE;
 
+	// Choose whatever possible, but prioritise discrete_gpu
 	for (int i = 0; i < count; i++)
 	{
 		if (vk->_physical_device == VK_NULL_HANDLE) vk->_physical_device = physical_devices[i];
@@ -218,18 +216,32 @@ static Result create_logical_device(VulkanState *vk)
 	device_create_info.queueCreateInfoCount = queue_count;
 	device_create_info.pQueueCreateInfos = queue_create_infos;
 
-	// No features needed for now
-	VkPhysicalDeviceFeatures device_features = {};
-
-	device_create_info.pEnabledFeatures = &device_features;
-
-	const char *required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-	uint32_t required_count = sizeof(required_extensions) / sizeof(required_extensions[0]);
-
-	if (!check_device_extension_support(vk->_physical_device, required_extensions, required_count)) return FAILURE;
 	
-	device_create_info.enabledExtensionCount = required_count;
+	// Use Dynamic Rendering instead of Renderpass
+	
+	const char * required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+	uint32_t required_extensions_count = sizeof(required_extensions) / sizeof(required_extensions[0]);
+	
+	check_device_extension_support(vk->_physical_device, required_extensions, required_extensions_count);
 	device_create_info.ppEnabledExtensionNames = required_extensions;
+	device_create_info.enabledExtensionCount = required_extensions_count;
+
+	// Use dynamic rendering instead of renderpass
+	// https://docs.vulkan.org/samples/latest/samples/extensions/dynamic_rendering/README.html
+	VkPhysicalDeviceVulkan13Features v13_features = {};
+	v13_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+	v13_features.dynamicRendering = VK_TRUE;
+
+	// VkPhysicalDeviceFeatures2 provide a pNext chain to enable features on the device.
+	// The features member of this structs is 1.0 features. No features needed for now
+	VkPhysicalDeviceFeatures2 device_features = {};
+	device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+	device_features.pNext = &v13_features;
+	
+	// pEnabledFeatures is legacy. Use pNext chain to enable features
+	//device_create_info.pEnabledFeatures = &device_features;
+
+	device_create_info.pNext = &device_features;
 
 	if (vkCreateDevice(vk->_physical_device, &device_create_info, nullptr, &vk->_device) != VK_SUCCESS)
 	{
@@ -263,6 +275,7 @@ static VkExtent2D get_swap_extent(const VkSurfaceCapabilitiesKHR *capabilities, 
 	return extent;
 };
 
+// Get the format that support normal rgba and srgb color space, or fallback to whatever available
 VkSurfaceFormatKHR get_swap_surface_format(VulkanState *vk)
 {
 	uint32_t format_count;
@@ -365,7 +378,8 @@ static Result create_swapchain(VulkanState *vk, SDL_Window *window)
 		return FAILURE;
 	};
 
-	SDL_Log("Created Swapchain\n");
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU,"Created Swapchain\n");
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Use %d images in swapchain\n", image_count);
 
 	vkGetSwapchainImagesKHR(vk->_device, vk->_swapchain, &vk->_swapchain_images_count, nullptr);
 
@@ -379,10 +393,9 @@ static Result create_swapchain(VulkanState *vk, SDL_Window *window)
 
 static Result create_image_view(VulkanState *vk)
 {
-	vk->_swapchain_imageviews_count = vk->_swapchain_images_count;
-	vk->_swapchain_imageviews = calloc(vk->_swapchain_imageviews_count, sizeof(VkImageView));
+	vk->_swapchain_imageviews = calloc(vk->_swapchain_images_count, sizeof(VkImageView));
 
-	for (int i = 0; i < vk->_swapchain_imageviews_count; i++)
+	for (int i = 0; i < vk->_swapchain_images_count; i++)
 	{
 		VkImageViewCreateInfo create_info = {};
 		create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
@@ -406,36 +419,45 @@ static Result create_image_view(VulkanState *vk)
 		};
 	};
 
+	SDL_LogInfo("Created %d image views\n", vk->_swapchain_images_count);
 	return SUCCESS;
 };
 static Result create_vulkan_instance(VulkanState *vk)
 {
+	uint32_t instanceVersion = VK_API_VERSION_1_0;
+	vkEnumerateInstanceVersion(&instanceVersion);
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU,"Instance supported version: %u.%u.%u\n",
+		   VK_VERSION_MAJOR(instanceVersion),
+		   VK_VERSION_MINOR(instanceVersion),
+		   VK_VERSION_PATCH(instanceVersion));
+    show_available_instance_extensions();
     VkApplicationInfo app_info = {};
     app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
     app_info.pApplicationName = "Home Invasion";
     app_info.applicationVersion = VK_MAKE_VERSION(1,0,0);
-    app_info.apiVersion = VK_API_VERSION_1_4;
+    app_info.apiVersion = VK_API_VERSION_1_3;
     
     VkInstanceCreateInfo instance_create_info = {};
     instance_create_info.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
     instance_create_info.pApplicationInfo = &app_info;
     
-    uint32_t count = 0;
-    const char * const *sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&count);
+	// SDL provide the needed extensions for creating the instance (like VK_KHR_win32/wayland..._surface)
+    uint32_t sdl_extensions_count = 0;
+    const char * const *sdl_extensions = SDL_Vulkan_GetInstanceExtensions(&sdl_extensions_count);
 
-	uint32_t total_exts_count = count + (ENABLE_VALIDATION_LAYERS ? 1 : 0);
+	uint32_t total_exts_count = sdl_extensions_count + (ENABLE_VALIDATION_LAYERS ? 1 : 0);
     const char **extensions = (const char **)malloc(total_exts_count * sizeof(char*));
-	for (int i = 0; i < count; i++)
+	for (int i = 0; i < sdl_extensions_count; i++)
 	{
 		extensions[i] = sdl_extensions[i];
 	};
-
-	if (ENABLE_VALIDATION_LAYERS) extensions[count] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
+	
+	if (ENABLE_VALIDATION_LAYERS) extensions[total_exts_count - 1] = VK_EXT_DEBUG_UTILS_EXTENSION_NAME;
     
-    fprintf(stderr, "Instance Extensions count: %d\n", count);
+    SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "# Instance Extensions count: %d\n", total_exts_count);
     for (int i = 0; i < total_exts_count; i++)
     {
-        fprintf(stderr, "%s\n", extensions[i]);
+        SDL_Log("%s\n", extensions[i]);
     };
     instance_create_info.enabledExtensionCount = total_exts_count;
     instance_create_info.ppEnabledExtensionNames = extensions;
@@ -457,17 +479,15 @@ static Result create_vulkan_instance(VulkanState *vk)
 
 		if (!layer_found)
 		{
-			fprintf(stderr, "Validation layer requested but not found\n");
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Validation layer requested but not found\n");
 			return FAILURE;
 		};
 
-		fprintf(stderr, "Enabled validation layers\n");
+		SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Enabled validation layers\n");
 
 	 instance_create_info.enabledLayerCount = 1;
 	 instance_create_info.ppEnabledLayerNames = validation_layers;
 	};
-    
-    show_available_extensions();
 
 	// DEBUG_MESSENGER
 #ifndef NDEBUG
@@ -476,8 +496,8 @@ static Result create_vulkan_instance(VulkanState *vk)
 	debug_messenger_create_info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT 
 		| VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT
 		| VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
-	debug_messenger_create_info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT
-		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
+	debug_messenger_create_info.messageSeverity =
+		VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT
 		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT
 		| VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT;
 
@@ -494,11 +514,13 @@ static Result create_vulkan_instance(VulkanState *vk)
     
     if (result != VK_SUCCESS)
     {
-        fprintf(stderr, "Failed to create vulkan instance\n");
+        SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create vulkan instance\n");
 		return FAILURE;
     };
 
-    fprintf(stderr, "Created Vulkan Instance\n");
+
+    SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "# Created Vulkan Instance, version\n");
+	
 
 #ifndef NDEBUG
 	if (create_debug_messenger_util(vk->_instance, &debug_messenger_create_info, nullptr, &vk->_debug_messenger) != VK_SUCCESS)
@@ -512,6 +534,7 @@ static Result create_vulkan_instance(VulkanState *vk)
 };
 static Result init_sdl(AppState *app)
 {
+	SDL_SetLogPriorities(SDL_LOG_PRIORITY_DEBUG);
 	if (!SDL_Init(SDL_INIT_VIDEO))
 	{
 		SDL_Log("Couldn't init SDL\n");
@@ -538,8 +561,7 @@ static Result create_vulkan_surface(AppState *app)
 		return FAILURE;
 	};
 
-	SDL_Log("Created Vulkan surface\n");
-	VkBool32 presentation_support;
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "# Created Vulkan surface\n");
 
 	return SUCCESS;
 };
@@ -580,6 +602,14 @@ VkShaderModule create_shader_module(VkDevice device, const char *src, size_t siz
 
 	return shader_module;
 };
+
+// TODO: Make this as a fallback
+//If not using Dynamic Rendering, draw commands must be recorded within a render pass instance.
+//Each render pass instance defines a set of image resources,
+//referred to as attachments, used during rendering.
+//static Result create_render_pass(VulkanState *vk)
+//{
+//};
 
 static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_path, const char *frag_shader_path)
 {
@@ -671,7 +701,7 @@ static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_
 	colorblend_attachment.colorWriteMask = VK_COLOR_COMPONENT_R_BIT
 		| VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT
 		| VK_COLOR_COMPONENT_A_BIT;
-	// if false, new color from fragment shader is passed through unmodified
+	// if false, new color from fragment shader is passed through unmodified.
 	// below is alpha-blending
 	// `	finalColor.rgb = newAlpha * newColor + (1 - newAlpha) * oldColor;
 	// `	finalColor.a = newAlpha.a
@@ -698,11 +728,47 @@ static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_
 		return FAILURE;
 	};
 
-	CONTINUE_HERE
 
+	return SUCCESS;
+};
+
+static Result create_command_pool(VulkanState *vk)
+{
+	VkCommandPoolCreateInfo cmdpool_create_info = {}
+	cmdpool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CERATE_INFO;	
+	cmdpool_create_info.queueFamilyIndex = vk->_queue_indicies._graphics;
+	// This allow command buffers to be reset individually via vkResetCommandBuffer
+	cmdpool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+	
+	if (vkCreateCommandPool(vk->_device, &cmdpool_create_info, nullptr, &vk->_commandpool) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create command pool\n")
+		return FAILURE;
+	};
+	
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Created Command pool\n");
+	return SUCCESS;
+};
+
+static Result create_command_buffer(VulkanState *vk)
+{
+	VkCommandBufferAllocateInfo cmdbuffer_create_info = {};
+	cmdbuffer_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+	cmdbuffer_create_info.commandBufferCount = 1;
+	cmdbuffer_create_info.commandPool = vk->_commandpool;
+	cmdbuffer_create_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+	
+	if (vkAllocateCommandBuffers(vk->_device, &cmdbuffer_create_info, &vk->_commandbuffer) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to allocate command buffer\n");
+		return FAILURE;
+	};
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Allocated command buffer\n");
+	
 	return SUCCESS;
 
 };
+
 
 Result app_init(AppState *app)
 {
@@ -725,7 +791,7 @@ void app_quit(AppState *app)
 #ifndef NDEBUG
 	destroy_debug_messenter_util(app->_vk._instance, app->_vk._debug_messenger, nullptr);
 #endif
-	for (uint32_t i = 0; i < app->_vk._swapchain_imageviews_count; i++)
+	for (uint32_t i = 0; i < app->_vk._swapchain_images_count; i++)
 	{
 		vkDestroyImageView(app->_vk._device, app->_vk._swapchain_imageviews[i], nullptr);
 	};

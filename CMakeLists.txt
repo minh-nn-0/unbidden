@@ -11,7 +11,6 @@ add_subdirectory(vendor)
 
 add_executable(homeinvasion
 	src/main.c
-	src/gles2.c
 	src/app.c
 )
 target_include_directories(homeinvasion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
