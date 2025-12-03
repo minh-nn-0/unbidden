@@ -1,5 +1,7 @@
 #include "app.h"
+#include "SDL3/SDL_gpu.h"
 #include "SDL3/SDL_log.h"
+#include "vk.h"
 #include <SDL3_image/SDL_image.h>
 #include <SDL3/SDL_vulkan.h>
 #include <stdio.h>
@@ -230,6 +232,8 @@ static Result create_logical_device(VulkanState *vk)
 	VkPhysicalDeviceVulkan13Features v13_features = {};
 	v13_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	v13_features.dynamicRendering = VK_TRUE;
+	// https://docs.vulkan.org/guide/latest/extensions/VK_KHR_synchronization2.html
+	v13_features.synchronization2 = VK_TRUE;
 
 	// Use DrawParameters feature of spirv 1.5
 	
@@ -255,7 +259,8 @@ static Result create_logical_device(VulkanState *vk)
 		return FAILURE;
 	};
 
-	vkGetDeviceQueue(vk->_device, graphic_queue_family, 0, &vk->_present_queue);
+	vkGetDeviceQueue(vk->_device, graphic_queue_family, 0, &vk->_graphics_queue);
+	vkGetDeviceQueue(vk->_device, present_queue_family, 0, &vk->_present_queue);
 
 	return SUCCESS;
 };
@@ -389,8 +394,6 @@ static Result create_swapchain(VulkanState *vk, SDL_Window *window)
 
 	vkGetSwapchainImagesKHR(vk->_device, vk->_swapchain, &vk->_swapchain_images_count, nullptr);
 
-	vk->_swapchain_images = calloc(vk->_swapchain_images_count, sizeof(VkImage));
-	vkGetSwapchainImagesKHR(vk->_device, vk->_swapchain, &vk->_swapchain_images_count, vk->_swapchain_images);
 
 	vk->_swapchain_extent = extent;
 	vk->_swapchain_format = surface_format.format;
@@ -399,7 +402,6 @@ static Result create_swapchain(VulkanState *vk, SDL_Window *window)
 
 static Result create_image_view(VulkanState *vk)
 {
-	vk->_swapchain_imageviews = calloc(vk->_swapchain_images_count, sizeof(VkImageView));
 
 	for (int i = 0; i < vk->_swapchain_images_count; i++)
 	{
@@ -547,7 +549,7 @@ static Result init_sdl(AppState *app)
         return FAILURE;
 	};
 	
-	app->_window = SDL_CreateWindow("home invasion", 800, 600, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+	app->_window = SDL_CreateWindow("Test", 800, 600, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
 
 	if (app->_window == nullptr)
 	{
@@ -877,6 +879,8 @@ static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 
 	vkCmdDraw(vk->_commandbuffer, 3, 1, 0, 0);
 
+
+	vkCmdEndRendering(vk->_commandbuffer);
 	//After drawing, transition the image back to PRESENT_SRC
 	
 	transition_image_layout(vk, image_idx,
@@ -885,9 +889,58 @@ static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
 	vkEndCommandBuffer(vk->_commandbuffer);
+
 };
 
+static Result create_sync_objects(VulkanState *vk)
+{
+	VkSemaphoreCreateInfo smp_create_info = {};
+	smp_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
+	if (vkCreateSemaphore(vk->_device, &smp_create_info,
+		nullptr, &vk->_smp_present_complete) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create present semaphore\n");
+		return FAILURE;
+	};
+	if (vkCreateSemaphore(vk->_device, &smp_create_info,
+		nullptr, &vk->_smp_render_complete) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create render semaphore\n");
+		return FAILURE;
+	};
+	
+	VkFenceCreateInfo fence_create_info = {};
+	fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+	if (vkCreateFence(vk->_device, &fence_create_info, nullptr, &vk->_fence_draw) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create fence for drawing\n");
+		return FAILURE;
+	};
+	
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Created sync objects\n");
+	return SUCCESS;
+};
+
+static void cleanup_swapchain(VkDevice device, VkSwapchainKHR swapchain, uint32_t imageview_count, VkImageView* imageviews)
+{
+	for (uint32_t i = 0; i < imageview_count; i++)
+	{
+		vkDestroyImageView(device, imageviews[i], nullptr);
+	};
+	
+	vkDestroySwapchainKHR(device, swapchain,nullptr);
+};
+
+static void recreate_swapchain(VulkanState* vk, SDL_Window* window)
+{
+	vkDeviceWaitIdle(vk->_device);
+	
+	cleanup_swapchain(vk->_device, vk->_swapchain, vk->_swapchain_images_count, vk->_swapchain_imageviews);
+	create_swapchain(vk, window);
+	vkGetSwapchainImagesKHR(vk->_device, vk->_swapchain, &vk->_swapchain_images_count, vk->_swapchain_images);
+	create_image_view(vk);
+};
 Result app_init(AppState *app)
 {
 	if (init_sdl(app) != SUCCESS) return FAILURE;
@@ -895,33 +948,128 @@ Result app_init(AppState *app)
 	if (create_vulkan_surface(app) != SUCCESS) return FAILURE;
 	if (pick_physical_device(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_logical_device(&app->_vk) != SUCCESS) return FAILURE;
+
+
 	if (create_swapchain(&app->_vk, app->_window) != SUCCESS) return FAILURE;
+	app->_vk._swapchain_images = calloc(app->_vk._swapchain_images_count, sizeof(VkImage));
+	vkGetSwapchainImagesKHR(app->_vk._device, app->_vk._swapchain, &app->_vk._swapchain_images_count, app->_vk._swapchain_images);
+	app->_vk._swapchain_imageviews = calloc(app->_vk._swapchain_images_count, sizeof(VkImageView));
 	if (create_image_view(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_graphics_pipeline(&app->_vk, "shader/slang_compiled.spv") != SUCCESS) return FAILURE;
 	if (create_command_pool(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_command_buffer(&app->_vk) != SUCCESS) return FAILURE;
+	if (create_sync_objects(&app->_vk) != SUCCESS) return FAILURE;
 
 	return SUCCESS;
 };
+
+static void draw(AppState *app)
+{
+	VulkanState *vk = &app->_vk;
+
+	vkQueueWaitIdle(vk->_graphics_queue);
+	
+	VkAcquireNextImageInfoKHR acquire_next_image_info = {};
+	acquire_next_image_info.sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR;
+	acquire_next_image_info.semaphore = vk->_smp_present_complete;
+	acquire_next_image_info.timeout = UINT64_MAX;
+	acquire_next_image_info.swapchain = vk->_swapchain;
+	// If use multiple gpus, need to mask which one we are using
+	acquire_next_image_info.deviceMask = 1;
+
+	uint32_t img_idx = 0;
+	VkResult acquire_image_result = vkAcquireNextImage2KHR(vk->_device, &acquire_next_image_info, &img_idx);
+	if (acquire_image_result == VK_ERROR_OUT_OF_DATE_KHR)
+	{
+		recreate_swapchain(&app->_vk, app->_window);
+		return;
+	}
+	else if (acquire_image_result != VK_SUCCESS && acquire_image_result != VK_SUBOPTIMAL_KHR)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to acquire next image\n");
+		exit(0);
+	};
+
+	// Put fence in unsignal state to pass to queue_summit, then we can use
+	// vkWaitForFences() to know when gpu is done
+	vkResetFences(vk->_device, 1, &vk->_fence_draw);
+	
+	record_command_buffer(vk, img_idx);
+	VkPipelineStageFlagBits2 pipeline_stage_flag = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	
+	// Wait semamphore submit info
+	VkSemaphoreSubmitInfo wait_smp_submit_info = {};
+	wait_smp_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	wait_smp_submit_info.semaphore = vk->_smp_present_complete;
+	// For binary semaphore, this is ignore. Otherwise (timeline semaphore),
+	// value is either the value used to signal semaphore
+	// or the value waited on by semaphore
+	wait_smp_submit_info.value = 0;
+	wait_smp_submit_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+	// Wait semamphore submit info
+	VkSemaphoreSubmitInfo signal_smp_submit_info = {};
+	signal_smp_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	signal_smp_submit_info.semaphore = vk->_smp_render_complete;
+	signal_smp_submit_info.value = 0;
+	signal_smp_submit_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	
+	//Command buffer submit info
+
+	VkCommandBufferSubmitInfo cmd_submit_info = {};
+	cmd_submit_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
+	cmd_submit_info.commandBuffer = vk->_commandbuffer;
+
+	VkSubmitInfo2 submit_info = {};
+	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
+	submit_info.waitSemaphoreInfoCount = 1;
+	submit_info.pWaitSemaphoreInfos = &wait_smp_submit_info;
+	submit_info.signalSemaphoreInfoCount = 1;
+	submit_info.pSignalSemaphoreInfos = &signal_smp_submit_info;
+	submit_info.commandBufferInfoCount = 1;
+	submit_info.pCommandBufferInfos = &cmd_submit_info;
+	
+	// Submit the queue.
+	vkQueueSubmit2(vk->_graphics_queue, 1, &submit_info, vk->_fence_draw);
+	
+	// Wait for the gpu to done work
+	vkWaitForFences(vk->_device, 1, &vk->_fence_draw, VK_TRUE, UINT64_MAX);
+	
+	VkPresentInfoKHR present_info = {};
+	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+	present_info.waitSemaphoreCount = 1;
+	present_info.pWaitSemaphores = &vk->_smp_render_complete;
+	present_info.swapchainCount = 1;
+	present_info.pSwapchains = &vk->_swapchain;
+	present_info.pImageIndices = &img_idx;
+	
+	VkResult present_result = vkQueuePresentKHR(vk->_graphics_queue, &present_info);
+	if (present_result == VK_ERROR_OUT_OF_DATE_KHR || present_result == VK_SUBOPTIMAL_KHR)
+	{
+		recreate_swapchain(&app->_vk, app->_window);
+	};
+};
 Result app_mainloop(AppState *app)
 {
+	draw(app);
     return SUCCESS;
 };
 void app_quit(AppState *app)
 {
+	vkDeviceWaitIdle(app->_vk._device);
 #ifndef NDEBUG
 	destroy_debug_messenter_util(app->_vk._instance, app->_vk._debug_messenger, nullptr);
 #endif
-	for (uint32_t i = 0; i < app->_vk._swapchain_images_count; i++)
-	{
-		vkDestroyImageView(app->_vk._device, app->_vk._swapchain_imageviews[i], nullptr);
-	};
+	cleanup_swapchain(app->_vk._device, app->_vk._swapchain, app->_vk._swapchain_images_count, app->_vk._swapchain_imageviews);
+
 	free(app->_vk._swapchain_imageviews);
 	free(app->_vk._swapchain_images);
+	vkDestroySemaphore(app->_vk._device, app->_vk._smp_present_complete, nullptr);
+	vkDestroySemaphore(app->_vk._device, app->_vk._smp_render_complete, nullptr);
+	vkDestroyFence(app->_vk._device, app->_vk._fence_draw, nullptr);
 	vkFreeCommandBuffers(app->_vk._device, app->_vk._commandpool, 1, &app->_vk._commandbuffer);
 	vkDestroyCommandPool(app->_vk._device, app->_vk._commandpool, nullptr);
 	vkDestroyPipelineLayout(app->_vk._device, app->_vk._pipeline_layout, nullptr);
-	vkDestroySwapchainKHR(app->_vk._device, app->_vk._swapchain, nullptr);
 	vkDestroyShaderModule(app->_vk._device, app->_vk._shader_module, nullptr);
 	vkDestroyPipeline(app->_vk._device, app->_vk._graphics_pipeline, nullptr);
 	vkDestroyDevice(app->_vk._device, nullptr);

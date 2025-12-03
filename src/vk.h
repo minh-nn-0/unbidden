@@ -31,4 +31,6 @@ typedef struct
     VkCommandBuffer _commandbuffer;
 	VkShaderModule _shader_module;
 	VkPipeline _graphics_pipeline;
+	VkSemaphore _smp_present_complete, _smp_render_complete;
+	VkFence _fence_draw;
 } VulkanState;
