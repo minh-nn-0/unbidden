@@ -10,6 +10,7 @@ typedef struct
 
 typedef struct
 {
+	QueueFamilyIndices _queue_indicies;
 	uint32_t _swapchain_images_count;
 	VkImageView *_swapchain_imageviews;
 	VkImage *_swapchain_images;
@@ -28,5 +29,6 @@ typedef struct
     VkCommandPool _commandpool;
     // Use single one for first time experimenting
     VkCommandBuffer _commandbuffer;
-	QueueFamilyIndices _queue_indicies;
+	VkShaderModule _shader_module;
+	VkPipeline _graphics_pipeline;
 } VulkanState;

@@ -217,9 +217,8 @@ static Result create_logical_device(VulkanState *vk)
 	device_create_info.pQueueCreateInfos = queue_create_infos;
 
 	
-	// Use Dynamic Rendering instead of Renderpass
 	
-	const char * required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
+	const char * required_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 	uint32_t required_extensions_count = sizeof(required_extensions) / sizeof(required_extensions[0]);
 	
 	check_device_extension_support(vk->_physical_device, required_extensions, required_extensions_count);
@@ -232,11 +231,18 @@ static Result create_logical_device(VulkanState *vk)
 	v13_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
 	v13_features.dynamicRendering = VK_TRUE;
 
+	// Use DrawParameters feature of spirv 1.5
+	
+	VkPhysicalDeviceVulkan11Features v11_features = {};
+	v11_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+	v11_features.shaderDrawParameters = VK_TRUE;
+	v11_features.pNext = &v13_features;
+
 	// VkPhysicalDeviceFeatures2 provide a pNext chain to enable features on the device.
 	// The features member of this structs is 1.0 features. No features needed for now
 	VkPhysicalDeviceFeatures2 device_features = {};
 	device_features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-	device_features.pNext = &v13_features;
+	device_features.pNext = &v11_features;
 	
 	// pEnabledFeatures is legacy. Use pNext chain to enable features
 	//device_create_info.pEnabledFeatures = &device_features;
@@ -419,7 +425,7 @@ static Result create_image_view(VulkanState *vk)
 		};
 	};
 
-	SDL_LogInfo("Created %d image views\n", vk->_swapchain_images_count);
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Created %d image views\n", vk->_swapchain_images_count);
 	return SUCCESS;
 };
 static Result create_vulkan_instance(VulkanState *vk)
@@ -611,33 +617,25 @@ VkShaderModule create_shader_module(VkDevice device, const char *src, size_t siz
 //{
 //};
 
-static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_path, const char *frag_shader_path)
+static Result create_graphics_pipeline(VulkanState *vk, const char *shader_path)
 {
-	uint32_t vert_src_size, frag_src_size;
-	char *vert_shader_src = read_shader_file(vert_shader_path, &vert_src_size);
-	char *frag_shader_src = read_shader_file(frag_shader_path, &frag_src_size);
+	uint32_t shader_size;
+	const char* shader_src = read_shader_file(shader_path, &shader_size);
+	vk->_shader_module = create_shader_module(vk->_device, shader_src, shader_size);
 
-	VkShaderModule vert_shader_module = create_shader_module(vk->_device, vert_shader_src, vert_src_size);
-	VkShaderModule frag_shader_module = create_shader_module(vk->_device, frag_shader_src, frag_src_size);
+	VkPipelineShaderStageCreateInfo shader_stage_create_info[2] = {0};
+	shader_stage_create_info[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shader_stage_create_info[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+	shader_stage_create_info[0].module = vk->_shader_module;
+	shader_stage_create_info[0].pName = "vert_main" ;
 
-	VkPipelineShaderStageCreateInfo vert_shader_create_info = {};
-	vert_shader_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	vert_shader_create_info.stage = VK_SHADER_STAGE_VERTEX_BIT;
-	vert_shader_create_info.module = vert_shader_module;
-	vert_shader_create_info.pName = "main" ;
+	shader_stage_create_info[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+	shader_stage_create_info[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+	shader_stage_create_info[1].module = vk->_shader_module;
+	shader_stage_create_info[1].pName = "frag_main";
 
-	VkPipelineShaderStageCreateInfo frag_shader_create_info = {};
-	frag_shader_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-	frag_shader_create_info.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-	frag_shader_create_info.module = frag_shader_module;
-	frag_shader_create_info.pName = "main" ;
-
-	VkPipelineVertexInputStateCreateInfo vertexInputInfo = {};
-	vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
-	vertexInputInfo.vertexBindingDescriptionCount = 0;
-	vertexInputInfo.pVertexBindingDescriptions = nullptr;
-	vertexInputInfo.vertexAttributeDescriptionCount = 0;
-	vertexInputInfo.pVertexAttributeDescriptions = nullptr;
+	VkPipelineVertexInputStateCreateInfo vertex_input_info = {};
+	vertex_input_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
 	VkPipelineInputAssemblyStateCreateInfo input_assembly_create_info = {};
 
@@ -645,41 +643,35 @@ static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_
 	input_assembly_create_info.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 	input_assembly_create_info.primitiveRestartEnable = VK_FALSE;
 
+
+
 	VkDynamicState dynamic_states[] = {VK_DYNAMIC_STATE_SCISSOR, VK_DYNAMIC_STATE_VIEWPORT};
 	uint32_t dynamic_states_size = sizeof(dynamic_states) / sizeof(dynamic_states[0]);
 	VkPipelineDynamicStateCreateInfo dynamic_state_create_info = {};
 	dynamic_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
 	dynamic_state_create_info.pDynamicStates = dynamic_states;
 	dynamic_state_create_info.dynamicStateCount = dynamic_states_size;
-
-	//VkViewport viewport = {};
-	//viewport.x = 0;
-	//viewport.y = 0;
-	//viewport.width = (float)vk->_swapchain_extent.width;
-	//viewport.height = (float)vk->_swapchain_extent.height;
-	//viewport.minDepth = 0.0f;
-	//viewport.maxDepth = 1.0f;
-
-	//VkRect2D scissor = {};
-	//scissor.offset = (VkOffset2D){0, 0};
-	//scissor.extent = vk->_swapchain_extent;
-
 	
-	VkPipelineViewportStateCreateInfo viewport_state_create_info = {};
-	viewport_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	// With dynamic state, the actual viewport and scissor will be later set at drawing time
 	// Without dynamic state, they need to be set here, which makes them immutable - any changes needed require
 	// creating a new pipeline
 	// Can create multiple viewport and scissor on some GPU, need to enable in GPU features when creating
 	// logical device
+	VkPipelineViewportStateCreateInfo viewport_state_create_info = {};
+	viewport_state_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
 	viewport_state_create_info.scissorCount = 1;
 	viewport_state_create_info.viewportCount = 1;
 
 	// # Rasterizer
+	// The rasterizer takes the geometry shaped by the vertices from the vertex shader
+	// and turns it into fragments to be colored by the fragment shader. 
+	// It also performs depth testing, face culling and the scissor test, and it can be
+	// configured to output fragments that fill entire polygons or just the edges (wireframe rendering)
 
 	VkPipelineRasterizationStateCreateInfo rasterizer_create_info = {};
 	rasterizer_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
 	rasterizer_create_info.depthClampEnable = VK_FALSE;
+	rasterizer_create_info.depthBiasSlopeFactor = 1.0f;
 	rasterizer_create_info.rasterizerDiscardEnable = VK_FALSE;
 	rasterizer_create_info.polygonMode = VK_POLYGON_MODE_FILL;
 	rasterizer_create_info.lineWidth = 1.0f;
@@ -728,21 +720,53 @@ static Result create_graphics_pipeline(VulkanState *vk, const char *vert_shader_
 		return FAILURE;
 	};
 
+	// If use dynamic rendering, pass this to pNext of VkGraphicsPipelineCreateInfo and renderpass set to nullptr. This will specify the viewmask and
+	// color attachment info. If use a valid RenderPass, value of this structure is ignored
+	VkPipelineRenderingCreateInfo pipeline_rendering_create_info = {};
+	pipeline_rendering_create_info.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO;
+	pipeline_rendering_create_info.colorAttachmentCount = 1;
+	pipeline_rendering_create_info.pColorAttachmentFormats = &vk->_swapchain_format;
 
+	VkGraphicsPipelineCreateInfo graphics_pipeline_create_info = {
+		.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+		.pNext = &pipeline_rendering_create_info,
+		.stageCount = 2,
+		.pStages = shader_stage_create_info,
+		.pVertexInputState = &vertex_input_info,
+		.pInputAssemblyState = &input_assembly_create_info,
+		.pRasterizationState = &rasterizer_create_info,
+		.pColorBlendState = &colorblend_state_create_info,
+		.pMultisampleState = &multisample_create_info,
+		.pViewportState = &viewport_state_create_info,
+		.pDynamicState = &dynamic_state_create_info,
+		.renderPass = nullptr,
+		.layout = vk->_pipeline_layout,
+		.basePipelineHandle = VK_NULL_HANDLE,
+		.basePipelineIndex = -1,
+	};
+
+
+	if (vkCreateGraphicsPipelines(vk->_device, VK_NULL_HANDLE, 1, &graphics_pipeline_create_info, nullptr, &vk->_graphics_pipeline) != VK_SUCCESS)
+	{
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create graphics pipeline\n");
+		return FAILURE;
+	};
+
+	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Created Graphics Pipeline\n");
 	return SUCCESS;
 };
 
 static Result create_command_pool(VulkanState *vk)
 {
-	VkCommandPoolCreateInfo cmdpool_create_info = {}
-	cmdpool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CERATE_INFO;	
+	VkCommandPoolCreateInfo cmdpool_create_info = {};
+	cmdpool_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;	
 	cmdpool_create_info.queueFamilyIndex = vk->_queue_indicies._graphics;
 	// This allow command buffers to be reset individually via vkResetCommandBuffer
 	cmdpool_create_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
 	
 	if (vkCreateCommandPool(vk->_device, &cmdpool_create_info, nullptr, &vk->_commandpool) != VK_SUCCESS)
 	{
-		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create command pool\n")
+		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create command pool\n");
 		return FAILURE;
 	};
 	
@@ -766,7 +790,101 @@ static Result create_command_buffer(VulkanState *vk)
 	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Allocated command buffer\n");
 	
 	return SUCCESS;
+};
 
+static void transition_image_layout(VulkanState *vk,
+		uint32_t image_idx,
+		VkImageLayout old_layout,
+		VkImageLayout new_layout,
+		VkAccessFlags2 src_access_mask,
+		VkAccessFlags2 dst_access_mask,
+		VkPipelineStageFlags2 src_stage_mask,
+		VkPipelineStageFlags2 dst_stage_mask)
+{
+	VkImageMemoryBarrier2 img_memory_barrier = {};
+	img_memory_barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
+	img_memory_barrier.srcStageMask = src_stage_mask;
+	img_memory_barrier.dstStageMask = dst_stage_mask;
+	img_memory_barrier.srcAccessMask = src_access_mask;
+	img_memory_barrier.dstAccessMask = dst_access_mask;
+	img_memory_barrier.oldLayout = old_layout;
+	img_memory_barrier.newLayout = new_layout;
+	img_memory_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	img_memory_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+	img_memory_barrier.image = vk->_swapchain_images[image_idx];
+	img_memory_barrier.subresourceRange = (VkImageSubresourceRange){
+		.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+		.baseMipLevel = 0,
+		.levelCount = 1,
+		.layerCount = 1,
+		.baseArrayLayer = 0
+	};
+
+	VkDependencyInfo dependency_info = {};
+	dependency_info.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO;
+	dependency_info.imageMemoryBarrierCount = 1;
+	dependency_info.pImageMemoryBarriers = &img_memory_barrier;
+
+	vkCmdPipelineBarrier2(vk->_commandbuffer, &dependency_info);
+};
+static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
+{
+	VkCommandBufferBeginInfo cmdbuffer_begin_info = {};
+	cmdbuffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+	vkBeginCommandBuffer(vk->_commandbuffer, &cmdbuffer_begin_info);
+
+	//Before rendering, transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL
+	
+	transition_image_layout(vk, image_idx,
+			VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+			VK_ACCESS_2_NONE, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT);
+
+	VkClearValue clear_color = {};
+	clear_color.color = (VkClearColorValue){0.0f, 0.0f, 0.0f, 1.0f};
+	VkRenderingAttachmentInfo rendering_attachment_info = {};
+	rendering_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+	rendering_attachment_info.imageView = vk->_swapchain_imageviews[image_idx];
+	rendering_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+	rendering_attachment_info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+	rendering_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+	rendering_attachment_info.clearValue = clear_color;
+
+	VkRenderingInfo rendering_info = {};
+	rendering_info.sType = VK_STRUCTURE_TYPE_RENDERING_INFO;
+	rendering_info.renderArea = (VkRect2D){.offset = {0, 0}, .extent = vk->_swapchain_extent};
+	rendering_info.layerCount = 1;
+	rendering_info.colorAttachmentCount = 1;
+	rendering_info.pColorAttachments = &rendering_attachment_info;
+
+	vkCmdBeginRendering(vk->_commandbuffer, &rendering_info);
+
+	vkCmdBindPipeline(vk->_commandbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->_graphics_pipeline);
+
+	VkViewport viewport = {};
+	viewport.x = 0;
+	viewport.y = 0;
+	viewport.width = (float)vk->_swapchain_extent.width;
+	viewport.height = (float)vk->_swapchain_extent.height;
+	viewport.minDepth = 0.0f;
+	viewport.maxDepth = 1.0f;
+
+	VkRect2D scissor = {};
+	scissor.offset = (VkOffset2D){0, 0};
+	scissor.extent = vk->_swapchain_extent;
+	vkCmdSetViewport(vk->_commandbuffer, 0, 1, &viewport);
+	vkCmdSetScissor(vk->_commandbuffer, 0, 1, &scissor);
+
+	vkCmdDraw(vk->_commandbuffer, 3, 1, 0, 0);
+
+	//After drawing, transition the image back to PRESENT_SRC
+	
+	transition_image_layout(vk, image_idx,
+			VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+			VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_NONE,
+			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
+
+	vkEndCommandBuffer(vk->_commandbuffer);
 };
 
 
@@ -779,6 +897,9 @@ Result app_init(AppState *app)
 	if (create_logical_device(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_swapchain(&app->_vk, app->_window) != SUCCESS) return FAILURE;
 	if (create_image_view(&app->_vk) != SUCCESS) return FAILURE;
+	if (create_graphics_pipeline(&app->_vk, "shader/slang_compiled.spv") != SUCCESS) return FAILURE;
+	if (create_command_pool(&app->_vk) != SUCCESS) return FAILURE;
+	if (create_command_buffer(&app->_vk) != SUCCESS) return FAILURE;
 
 	return SUCCESS;
 };
@@ -797,8 +918,12 @@ void app_quit(AppState *app)
 	};
 	free(app->_vk._swapchain_imageviews);
 	free(app->_vk._swapchain_images);
+	vkFreeCommandBuffers(app->_vk._device, app->_vk._commandpool, 1, &app->_vk._commandbuffer);
+	vkDestroyCommandPool(app->_vk._device, app->_vk._commandpool, nullptr);
 	vkDestroyPipelineLayout(app->_vk._device, app->_vk._pipeline_layout, nullptr);
 	vkDestroySwapchainKHR(app->_vk._device, app->_vk._swapchain, nullptr);
+	vkDestroyShaderModule(app->_vk._device, app->_vk._shader_module, nullptr);
+	vkDestroyPipeline(app->_vk._device, app->_vk._graphics_pipeline, nullptr);
 	vkDestroyDevice(app->_vk._device, nullptr);
 	vkDestroySurfaceKHR(app->_vk._instance, app->_vk._surface, nullptr);
     vkDestroyInstance(app->_vk._instance, nullptr);
