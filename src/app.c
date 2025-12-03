@@ -392,9 +392,6 @@ static Result create_swapchain(VulkanState *vk, SDL_Window *window)
 	SDL_LogInfo(SDL_LOG_CATEGORY_GPU,"Created Swapchain\n");
 	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Use %d images in swapchain\n", image_count);
 
-	vkGetSwapchainImagesKHR(vk->_device, vk->_swapchain, &vk->_swapchain_images_count, nullptr);
-
-
 	vk->_swapchain_extent = extent;
 	vk->_swapchain_format = surface_format.format;
 	return SUCCESS;
@@ -780,11 +777,11 @@ static Result create_command_buffer(VulkanState *vk)
 {
 	VkCommandBufferAllocateInfo cmdbuffer_create_info = {};
 	cmdbuffer_create_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-	cmdbuffer_create_info.commandBufferCount = 1;
+	cmdbuffer_create_info.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
 	cmdbuffer_create_info.commandPool = vk->_commandpool;
 	cmdbuffer_create_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
 	
-	if (vkAllocateCommandBuffers(vk->_device, &cmdbuffer_create_info, &vk->_commandbuffer) != VK_SUCCESS)
+	if (vkAllocateCommandBuffers(vk->_device, &cmdbuffer_create_info, vk->_commandbuffers) != VK_SUCCESS)
 	{
 		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to allocate command buffer\n");
 		return FAILURE;
@@ -827,13 +824,15 @@ static void transition_image_layout(VulkanState *vk,
 	dependency_info.imageMemoryBarrierCount = 1;
 	dependency_info.pImageMemoryBarriers = &img_memory_barrier;
 
-	vkCmdPipelineBarrier2(vk->_commandbuffer, &dependency_info);
+	vkCmdPipelineBarrier2(vk->_commandbuffers[vk->_current_frame], &dependency_info);
 };
 static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 {
+	VkCommandBuffer cmdbuffer = vk->_commandbuffers[vk->_current_frame];
+
 	VkCommandBufferBeginInfo cmdbuffer_begin_info = {};
 	cmdbuffer_begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-	vkBeginCommandBuffer(vk->_commandbuffer, &cmdbuffer_begin_info);
+	vkBeginCommandBuffer(cmdbuffer, &cmdbuffer_begin_info);
 
 	//Before rendering, transition the swapchain image to COLOR_ATTACHMENT_OPTIMAL
 	
@@ -859,9 +858,9 @@ static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 	rendering_info.colorAttachmentCount = 1;
 	rendering_info.pColorAttachments = &rendering_attachment_info;
 
-	vkCmdBeginRendering(vk->_commandbuffer, &rendering_info);
+	vkCmdBeginRendering(cmdbuffer, &rendering_info);
 
-	vkCmdBindPipeline(vk->_commandbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->_graphics_pipeline);
+	vkCmdBindPipeline(cmdbuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vk->_graphics_pipeline);
 
 	VkViewport viewport = {};
 	viewport.x = 0;
@@ -874,13 +873,13 @@ static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 	VkRect2D scissor = {};
 	scissor.offset = (VkOffset2D){0, 0};
 	scissor.extent = vk->_swapchain_extent;
-	vkCmdSetViewport(vk->_commandbuffer, 0, 1, &viewport);
-	vkCmdSetScissor(vk->_commandbuffer, 0, 1, &scissor);
+	vkCmdSetViewport(cmdbuffer, 0, 1, &viewport);
+	vkCmdSetScissor(cmdbuffer, 0, 1, &scissor);
 
-	vkCmdDraw(vk->_commandbuffer, 3, 1, 0, 0);
+	vkCmdDraw(cmdbuffer, 3, 1, 0, 0);
 
 
-	vkCmdEndRendering(vk->_commandbuffer);
+	vkCmdEndRendering(cmdbuffer);
 	//After drawing, transition the image back to PRESENT_SRC
 	
 	transition_image_layout(vk, image_idx,
@@ -888,7 +887,7 @@ static void record_command_buffer(VulkanState *vk, uint32_t image_idx)
 			VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_2_NONE,
 			VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_2_BOTTOM_OF_PIPE_BIT);
 
-	vkEndCommandBuffer(vk->_commandbuffer);
+	vkEndCommandBuffer(cmdbuffer);
 
 };
 
@@ -897,27 +896,32 @@ static Result create_sync_objects(VulkanState *vk)
 	VkSemaphoreCreateInfo smp_create_info = {};
 	smp_create_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-	if (vkCreateSemaphore(vk->_device, &smp_create_info,
-		nullptr, &vk->_smp_present_complete) != VK_SUCCESS)
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
 	{
-		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create present semaphore\n");
-		return FAILURE;
-	};
-	if (vkCreateSemaphore(vk->_device, &smp_create_info,
-		nullptr, &vk->_smp_render_complete) != VK_SUCCESS)
-	{
-		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create render semaphore\n");
-		return FAILURE;
-	};
-	
-	VkFenceCreateInfo fence_create_info = {};
-	fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-	if (vkCreateFence(vk->_device, &fence_create_info, nullptr, &vk->_fence_draw) != VK_SUCCESS)
-	{
-		SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create fence for drawing\n");
-		return FAILURE;
+		if (vkCreateSemaphore(vk->_device, &smp_create_info,
+			nullptr, &vk->_smps_present_complete[i]) != VK_SUCCESS)
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create present semaphore\n");
+			return FAILURE;
+		};
+		if (vkCreateSemaphore(vk->_device, &smp_create_info,
+			nullptr, &vk->_smps_render_complete[i]) != VK_SUCCESS)
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create render semaphore\n");
+			return FAILURE;
+		};
 	};
 	
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		VkFenceCreateInfo fence_create_info = {};
+		fence_create_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+		if (vkCreateFence(vk->_device, &fence_create_info, nullptr, &vk->_fences_draw[i]) != VK_SUCCESS)
+		{
+			SDL_LogError(SDL_LOG_CATEGORY_GPU, "Failed to create fence for drawing\n");
+			return FAILURE;
+		};
+	};
 	SDL_LogInfo(SDL_LOG_CATEGORY_GPU, "Created sync objects\n");
 	return SUCCESS;
 };
@@ -949,17 +953,23 @@ Result app_init(AppState *app)
 	if (pick_physical_device(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_logical_device(&app->_vk) != SUCCESS) return FAILURE;
 
-
 	if (create_swapchain(&app->_vk, app->_window) != SUCCESS) return FAILURE;
+	// Get swapchain images count
+	vkGetSwapchainImagesKHR(app->_vk._device, app->_vk._swapchain, &app->_vk._swapchain_images_count, nullptr);
+	
+	// Allocate swapchain images and imageviews
 	app->_vk._swapchain_images = calloc(app->_vk._swapchain_images_count, sizeof(VkImage));
-	vkGetSwapchainImagesKHR(app->_vk._device, app->_vk._swapchain, &app->_vk._swapchain_images_count, app->_vk._swapchain_images);
 	app->_vk._swapchain_imageviews = calloc(app->_vk._swapchain_images_count, sizeof(VkImageView));
+
+	vkGetSwapchainImagesKHR(app->_vk._device, app->_vk._swapchain, &app->_vk._swapchain_images_count, app->_vk._swapchain_images);
+
 	if (create_image_view(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_graphics_pipeline(&app->_vk, "shader/slang_compiled.spv") != SUCCESS) return FAILURE;
 	if (create_command_pool(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_command_buffer(&app->_vk) != SUCCESS) return FAILURE;
 	if (create_sync_objects(&app->_vk) != SUCCESS) return FAILURE;
 
+	app->_vk._current_frame = 0;
 	return SUCCESS;
 };
 
@@ -969,9 +979,14 @@ static void draw(AppState *app)
 
 	vkQueueWaitIdle(vk->_graphics_queue);
 	
+	VkSemaphore smp_present = vk->_smps_present_complete[vk->_current_frame];
+	VkSemaphore smp_render = vk->_smps_render_complete[vk->_current_frame];
+	VkFence fence = vk->_fences_draw[vk->_current_frame];
+	VkCommandBuffer cmdbuffer = vk->_commandbuffers[vk->_current_frame];
+	
 	VkAcquireNextImageInfoKHR acquire_next_image_info = {};
 	acquire_next_image_info.sType = VK_STRUCTURE_TYPE_ACQUIRE_NEXT_IMAGE_INFO_KHR;
-	acquire_next_image_info.semaphore = vk->_smp_present_complete;
+	acquire_next_image_info.semaphore = smp_present;
 	acquire_next_image_info.timeout = UINT64_MAX;
 	acquire_next_image_info.swapchain = vk->_swapchain;
 	// If use multiple gpus, need to mask which one we are using
@@ -992,53 +1007,53 @@ static void draw(AppState *app)
 
 	// Put fence in unsignal state to pass to queue_summit, then we can use
 	// vkWaitForFences() to know when gpu is done
-	vkResetFences(vk->_device, 1, &vk->_fence_draw);
+	vkResetFences(vk->_device, 1, &fence);
 	
 	record_command_buffer(vk, img_idx);
 	VkPipelineStageFlagBits2 pipeline_stage_flag = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
 	
 	// Wait semamphore submit info
-	VkSemaphoreSubmitInfo wait_smp_submit_info = {};
-	wait_smp_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-	wait_smp_submit_info.semaphore = vk->_smp_present_complete;
+	VkSemaphoreSubmitInfo wait_smps_submit_info = {};
+	wait_smps_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	wait_smps_submit_info.semaphore = smp_present;
 	// For binary semaphore, this is ignore. Otherwise (timeline semaphore),
 	// value is either the value used to signal semaphore
 	// or the value waited on by semaphore
-	wait_smp_submit_info.value = 0;
-	wait_smp_submit_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-
+	wait_smps_submit_info.value = 0;
+	wait_smps_submit_info.stageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+	
 	// Wait semamphore submit info
-	VkSemaphoreSubmitInfo signal_smp_submit_info = {};
-	signal_smp_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
-	signal_smp_submit_info.semaphore = vk->_smp_render_complete;
-	signal_smp_submit_info.value = 0;
-	signal_smp_submit_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+	VkSemaphoreSubmitInfo signal_smps_submit_info = {};
+	signal_smps_submit_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO;
+	signal_smps_submit_info.semaphore = smp_render;
+	signal_smps_submit_info.value = 0;
+	signal_smps_submit_info.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
 	
 	//Command buffer submit info
 
 	VkCommandBufferSubmitInfo cmd_submit_info = {};
 	cmd_submit_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO;
-	cmd_submit_info.commandBuffer = vk->_commandbuffer;
+	cmd_submit_info.commandBuffer = cmdbuffer;
 
 	VkSubmitInfo2 submit_info = {};
 	submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2;
 	submit_info.waitSemaphoreInfoCount = 1;
-	submit_info.pWaitSemaphoreInfos = &wait_smp_submit_info;
+	submit_info.pWaitSemaphoreInfos = &wait_smps_submit_info;
 	submit_info.signalSemaphoreInfoCount = 1;
-	submit_info.pSignalSemaphoreInfos = &signal_smp_submit_info;
+	submit_info.pSignalSemaphoreInfos = &signal_smps_submit_info;
 	submit_info.commandBufferInfoCount = 1;
 	submit_info.pCommandBufferInfos = &cmd_submit_info;
 	
 	// Submit the queue.
-	vkQueueSubmit2(vk->_graphics_queue, 1, &submit_info, vk->_fence_draw);
+	vkQueueSubmit2(vk->_graphics_queue, 1, &submit_info, fence);
 	
 	// Wait for the gpu to done work
-	vkWaitForFences(vk->_device, 1, &vk->_fence_draw, VK_TRUE, UINT64_MAX);
+	vkWaitForFences(vk->_device, 1, &fence, VK_TRUE, UINT64_MAX);
 	
 	VkPresentInfoKHR present_info = {};
 	present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
 	present_info.waitSemaphoreCount = 1;
-	present_info.pWaitSemaphores = &vk->_smp_render_complete;
+	present_info.pWaitSemaphores = &smp_render;
 	present_info.swapchainCount = 1;
 	present_info.pSwapchains = &vk->_swapchain;
 	present_info.pImageIndices = &img_idx;
@@ -1048,6 +1063,8 @@ static void draw(AppState *app)
 	{
 		recreate_swapchain(&app->_vk, app->_window);
 	};
+	
+	vk->_current_frame = (vk->_current_frame + 1) % MAX_FRAMES_IN_FLIGHT;
 };
 Result app_mainloop(AppState *app)
 {
@@ -1061,13 +1078,16 @@ void app_quit(AppState *app)
 	destroy_debug_messenter_util(app->_vk._instance, app->_vk._debug_messenger, nullptr);
 #endif
 	cleanup_swapchain(app->_vk._device, app->_vk._swapchain, app->_vk._swapchain_images_count, app->_vk._swapchain_imageviews);
-
+	
 	free(app->_vk._swapchain_imageviews);
 	free(app->_vk._swapchain_images);
-	vkDestroySemaphore(app->_vk._device, app->_vk._smp_present_complete, nullptr);
-	vkDestroySemaphore(app->_vk._device, app->_vk._smp_render_complete, nullptr);
-	vkDestroyFence(app->_vk._device, app->_vk._fence_draw, nullptr);
-	vkFreeCommandBuffers(app->_vk._device, app->_vk._commandpool, 1, &app->_vk._commandbuffer);
+	for (int i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+	{
+		vkDestroySemaphore(app->_vk._device, app->_vk._smps_present_complete[i], nullptr);
+		vkDestroySemaphore(app->_vk._device, app->_vk._smps_render_complete[i], nullptr);
+		vkDestroyFence(app->_vk._device, app->_vk._fences_draw[i], nullptr);
+	};
+	vkFreeCommandBuffers(app->_vk._device, app->_vk._commandpool, MAX_FRAMES_IN_FLIGHT, app->_vk._commandbuffers);
 	vkDestroyCommandPool(app->_vk._device, app->_vk._commandpool, nullptr);
 	vkDestroyPipelineLayout(app->_vk._device, app->_vk._pipeline_layout, nullptr);
 	vkDestroyShaderModule(app->_vk._device, app->_vk._shader_module, nullptr);

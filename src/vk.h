@@ -8,10 +8,11 @@ typedef struct
 	uint32_t _present;
 } QueueFamilyIndices;
 
+constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 typedef struct
 {
+	uint32_t _swapchain_images_count, _current_frame;
 	QueueFamilyIndices _queue_indicies;
-	uint32_t _swapchain_images_count;
 	VkImageView *_swapchain_imageviews;
 	VkImage *_swapchain_images;
 	VkInstance _instance;
@@ -19,6 +20,7 @@ typedef struct
 	VkDebugUtilsMessengerEXT _debug_messenger;
 #endif
 	VkSurfaceKHR _surface;
+	VkShaderModule _shader_module;
 	VkPhysicalDevice _physical_device;
 	VkDevice _device;
 	VkQueue _graphics_queue, _present_queue;
@@ -26,11 +28,10 @@ typedef struct
 	VkSwapchainKHR _swapchain;
 	VkFormat _swapchain_format;
 	VkExtent2D _swapchain_extent;
-    VkCommandPool _commandpool;
-    // Use single one for first time experimenting
-    VkCommandBuffer _commandbuffer;
-	VkShaderModule _shader_module;
 	VkPipeline _graphics_pipeline;
-	VkSemaphore _smp_present_complete, _smp_render_complete;
-	VkFence _fence_draw;
+    VkCommandPool _commandpool;
+    VkCommandBuffer _commandbuffers[MAX_FRAMES_IN_FLIGHT];
+	VkSemaphore _smps_present_complete[MAX_FRAMES_IN_FLIGHT],
+				_smps_render_complete[MAX_FRAMES_IN_FLIGHT];
+	VkFence _fences_draw[MAX_FRAMES_IN_FLIGHT];
 } VulkanState;
